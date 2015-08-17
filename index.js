@@ -25,28 +25,30 @@ function DataAdapterPool(options) {
 util.inherits(DataAdapterPool, events.EventEmitter);
 /**
  *
- * @param {DataAdapter|*} adp
+ * @param {DataAdapterPoolConnector|*} adp
  * @param {function(Error=)} callback
  */
 DataAdapterPool.prototype.connect = function(adp, callback) {
     var self = this;
     callback = callback || function() {};
     if (typeof adp === 'undefined' || adp == null) {
-        return callback(new Error('Missing argument.Data adapter cannot be empty at this context.'));
+        return callback(new Error('Missing argument. Data adapter cannot be empty at this context.'));
     }
     if (typeof adp.connect !== 'function') {
-        return callback(new Error('Invalid argument type. Expected DataAdapter.'));
+        return callback(new Error('Invalid argument type. Expected DataAdapterPoolConnector.'));
     }
     if (self.connections < self.options.maxConnections || self.options.maxConnections == 0) {
         //call DataAdapter.open()
         adp.connect(function(err) {
             if (err) { return callback(err); }
             self.connections += 1;
+            callback();
         });
     }
     else {
+        var timeout;
         //register a connection pool timeout
-        var timeout = setTimeout(function() {
+        timeout = setTimeout(function() {
             //throw timeout exception
             var er = new Error('Data adapter pooling timeout.');
             er.code = 'ETIMEOUT';
@@ -61,13 +63,14 @@ DataAdapterPool.prototype.connect = function(adp, callback) {
             adp.connect(function(err) {
                 if (err) { return callback(err); }
                 self.connections += 1;
+                callback();
             });
         });
     }
 };
 /**
  *
- * @param {DataAdapter|*} adp
+ * @param {DataAdapterPoolConnector|*} adp
  * @param {function(Error=)} callback
  */
 DataAdapterPool.prototype.disconnect = function(adp, callback) {
@@ -77,7 +80,7 @@ DataAdapterPool.prototype.disconnect = function(adp, callback) {
         return callback();
     }
     if (typeof adp.disconnect !== 'function') {
-        return callback(new Error('Invalid argument type. Expected DataAdapter.'));
+        return callback(new Error('Invalid argument type. Expected DataAdapterPoolConnector.'));
     }
     try {
         //call DataAdapter.close()
@@ -104,6 +107,28 @@ DataAdapterPool.prototype.disconnect = function(adp, callback) {
     }
 };
 /**
+ * @class DataAdapterPoolConnector
+ * @constructor
+ * @property {DataAdapterPool} pool - The underlying data adapter pool.
+ */
+function DataAdapterPoolConnector() {
+
+}
+/**
+ * @param {function(Error=)} callback
+ */
+DataAdapterPoolConnector.prototype.connect = function(callback) {
+
+};
+
+/**
+ * @param {function(Error=)} callback
+ */
+DataAdapterPoolConnector.prototype.disconnect = function(callback) {
+
+};
+
+/**
  *
  * @type {{DataAdapterPool: DataAdapterPool, pool: DataAdapterPool}}
  */
@@ -111,7 +136,11 @@ var adpP = {
     /**
      * @constructs {DataAdapterPool}
      */
-    DataAdapterPool:DataAdapterPool
+    DataAdapterPool:DataAdapterPool,
+    /**
+     * @constructs {DataAdapterPoolConnector}
+     */
+    DataAdapterPoolConnector:DataAdapterPoolConnector
 };
 //set default adapter pool
 adpP.pool = new DataAdapterPool();
