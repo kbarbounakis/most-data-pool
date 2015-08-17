@@ -1,0 +1,27 @@
+{
+  "name": "most-data-pool",
+  "version": "1.0.1",
+  "description": "Most Web Framework Data Adapter Pool Extension",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kbarbounakis/most-data-pool.git"
+  },
+  "keywords": [
+    "most",
+    "web",
+    "data",
+    "db",
+    "adapter",
+    "pool"
+  ],
+  "author": "Kyriakos Barbounakis <k.barbounakis@gmail.com>",
+  "license": "BSD3-Clause",
+  "bugs": {
+    "url": "https://github.com/kbarbounakis/most-data-pool/issues"
+  },
+  "homepage": "https://github.com/kbarbounakis/most-data-pool",
+  "dependencies": {
+
+  }
+}
