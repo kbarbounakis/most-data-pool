@@ -9,7 +9,16 @@
  * Date: 2015-08-16
  */
 var util = require('util'),
-    events = require('events');
+    events = require('events'),
+    winston = require("winston");
+
+var logger = new (winston.Logger)({
+    transports: [
+        new (winston.transports.Console)({
+            level: (process.env.NODE_ENV === 'development') ? 'debug' : 'info'
+        })
+    ]
+});
 /**
  * @class DataAdapterPool
  * @constructor
@@ -37,7 +46,7 @@ DataAdapterPool.prototype.connect = function(adp, callback) {
     if (typeof adp.connect !== 'function') {
         return callback(new Error('Invalid argument type. Expected DataAdapterPoolConnector.'));
     }
-    if (self.connections < self.options.maxConnections || self.options.maxConnections == 0) {
+    if ((self.connections < self.options.maxConnections) || (self.options.maxConnections == 0)) {
         //call DataAdapter.open()
         adp.connect(function(err) {
             if (err) { return callback(err); }
@@ -90,10 +99,10 @@ DataAdapterPool.prototype.disconnect = function(adp, callback) {
                 //exit emitter
                 var listener = listeners[0];
                 self.removeListener('disconnect', listener);
-                self.connections -= 1;
                 if (typeof listener === 'function') {
                     listener.call();
                 }
+                self.connections -= 1;
             }
             else {
                 self.connections -= 1;
@@ -128,10 +137,6 @@ DataAdapterPoolConnector.prototype.disconnect = function(callback) {
 
 };
 
-/**
- *
- * @type {{DataAdapterPool: DataAdapterPool, pool: DataAdapterPool}}
- */
 var adpP = {
     /**
      * @constructs {DataAdapterPool}
@@ -142,8 +147,6 @@ var adpP = {
      */
     DataAdapterPoolConnector:DataAdapterPoolConnector
 };
-//set default adapter pool
-adpP.pool = new DataAdapterPool();
 
 if (typeof exports !== 'undefined') {
     module.exports = adpP;

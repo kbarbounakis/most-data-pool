@@ -22,6 +22,6 @@
   },
   "homepage": "https://github.com/kbarbounakis/most-data-pool",
   "dependencies": {
-
+    "winston":"~1.0.1"
   }
 }
