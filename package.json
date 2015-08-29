@@ -1,6 +1,6 @@
 {
   "name": "most-data-pool",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Most Web Framework Data Adapter Pool Extension",
   "main": "index.js",
   "repository": {
@@ -22,6 +22,6 @@
   },
   "homepage": "https://github.com/kbarbounakis/most-data-pool",
   "dependencies": {
-    "async":"~1.4.2"
+    "async": "~1.4.2"
   }
 }
