@@ -179,14 +179,12 @@ DataAdapterPool.prototype.releaseObject = function(obj, callback) {
         }
         else {
             //search inUse collection
-            var ix = -1;
-            for (var i = 0; i < this.inUse.length; i++) {
-                if (this.inUse[i].hashCode === obj.hashCode) {
-                    var used = this.inUse.splice(i,1);
-                    //push connection to available connections
-                    self.available.push(used);
-                    break;
-                }
+            var used = this.inUse[obj.hashCode];
+            if (used) {
+                //delete used adapter
+                delete this.inUse[obj.hashCode];
+                //push adapter to available collection
+                self.available[used.hashCode] = used;
             }
         }
         //finally exit
@@ -196,39 +194,12 @@ DataAdapterPool.prototype.releaseObject = function(obj, callback) {
         callback(e);
     }
 };
-/**
- * @class DataAdapterPoolConnector
- * @constructor
- * @property {DataAdapterPool} pool - The underlying data adapter pool.
- * @property {*} rawConnection - The underlying data connection.
- */
-function DataAdapterPoolConnector() {
-
-}
-
-/**
- * @param {function(Error=)} callback
- */
-DataAdapterPoolConnector.prototype.connect = function(callback) {
-
-};
-
-/**
- * @param {function(Error=)} callback
- */
-DataAdapterPoolConnector.prototype.disconnect = function(callback) {
-
-};
 
 var adpP = {
     /**
      * @constructs {DataAdapterPool}
      */
-    DataAdapterPool:DataAdapterPool,
-    /**
-     * @constructs {DataAdapterPoolConnector}
-     */
-    DataAdapterPoolConnector:DataAdapterPoolConnector
+    DataAdapterPool:DataAdapterPool
 };
 
 if (typeof exports !== 'undefined') {
