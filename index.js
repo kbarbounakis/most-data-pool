@@ -9,7 +9,8 @@
  * Date: 2015-08-16
  */
 var util = require('util'),
-    async = require('async');
+    async = require('async'),
+    path = require('path');
 
 function randomInt(min, max) {
     return Math.floor(Math.random()*max) + min;
@@ -32,15 +33,26 @@ function randomHex(length) {
     return buffer.toString('hex');
 }
 
+function log(data) {
+    util.log(data);
+    if (data.stack) {
+        util.log(data.stack);
+    }
+}
+
+function debug(data) {
+    if (process.env.NODE_ENV==='development')
+        log(data);
+}
+
 /**
- * @class DataAdapterPool
+ * @class DataPool
  * @constructor
- * @param {{size:number,timeout:number,lifetime:number}=} options
- * @param {Function} ctor
- * @property {{size:number,timeout:number,lifetime:number}} options
+ * @param {{size:number,timeout:number,lifetime:number,adapter:*}=} options
+ * @property {{size:number,timeout:number,lifetime:number,adapter:*}} options
  */
-function DataAdapterPool(options, ctor) {
-    this.options = util._extend({ maxConnections:30, timeout:30000, lifetime:1200000 }, options);
+function DataPool(options) {
+    this.options = util._extend({ size:20, timeout:30000, lifetime:1200000 }, options);
     /**
      * A collection of objects which represents the available pooled data adapters.
      */
@@ -55,17 +67,84 @@ function DataAdapterPool(options, ctor) {
      */
     this.listeners = [ ];
     //set default state to active
-    self.state = 'active';
-    /**
-     * @type {Function}
-     * @returns DataAdapter
-     */
-    this.createObject = function() {
-        return new ctor(options);
-    };
+    this.state = 'active';
+
 }
 
-DataAdapterPool.prototype.cleanup = function(callback) {
+DataPool.prototype.createObject = function() {
+    //if local adapter module has been already loaded
+    if (typeof this.adapter_ !== 'undefined') {
+        //create adapter instance and return
+        return this.adapter_.createInstance(this.options.adapter.options);
+    }
+
+    this.options = this.options || {};
+    /**
+     * @type {{adapters:Array, adapterTypes:Array}|*}
+     */
+    var config;
+    if (global && global.application) {
+        var app = global.application;
+        config = app.config || { adapters:[], adapterTypes:[] };
+    }
+    else {
+        //try to load config file
+        try {
+            config = require(path.join(process.cwd(),'app/config.json'));
+        }
+        catch(e) {
+            log('Configuration file cannot be loaded due to internal error.');
+            log(e);
+            //config cannot be load (do nothing)
+            config = { adapters:[], adapterTypes:[] }
+        }
+    }
+    var adapter = this.options.adapter, er;
+    if (typeof this.options.adapter === 'string') {
+        var name = this.options.adapter;
+        //try to load adapter settings from configuration
+        config.adapters = config.adapters || [];
+        var namedAdapter = config.adapters.find(function(x) { return x.name === name; });
+        if (typeof namedAdapter === 'undefined') {
+            er = new Error('The specified data adapter cannot be found.');
+            er.code = 'ECONF';
+            throw er;
+        }
+        this.options.adapter = namedAdapter;
+        adapter = this.options.adapter;
+    }
+    if (typeof adapter === 'undefined' || adapter == null) {
+        er = new Error('The base data adapter cannot be empty at this context.');
+        er.code = 'ECONF';
+        throw er;
+    }
+    //get adapter's invariant name
+    var adapterType = config.adapterTypes.find(function(x) { return x.invariantName===adapter.invariantName });
+    if (typeof adapterType === 'undefined') {
+        er = new Error('The base data adapter cannot be found.');
+        er.code = 'ECONF';
+        throw er;
+    }
+    try {
+        var adapterModule = require(adapterType.type);
+    }
+    catch(e) {
+        log(e);
+        er = new Error('Base data adapter cannot be loaded due to internal error.');
+        er.code = 'ECONF';
+        throw er;
+    }
+    if (typeof adapterModule.createInstance !== 'function') {
+        er = new Error('Base data adapter module createInstance() method is missing or is not yet implemented.');
+        er.code = 'EMOD';
+        throw er;
+    }
+    //hold adapter module
+    this.adapter_ = adapterModule;
+    return this.adapter_.createInstance(adapter.options);
+};
+
+DataPool.prototype.cleanup = function(callback) {
     try {
         var self = this;
         self.state = 'paused';
@@ -96,7 +175,7 @@ DataAdapterPool.prototype.cleanup = function(callback) {
  *
  * @param {function(Error=,DataAdapter|*=)} callback
  */
-DataAdapterPool.prototype.getObject = function(callback) {
+DataPool.prototype.getObject = function(callback) {
     var self = this, newObj;
     callback = callback || function() {};
 
@@ -127,10 +206,16 @@ DataAdapterPool.prototype.getObject = function(callback) {
             er.code = 'EPTIMEOUT';
             callback(er);
         }, self.options.timeout);
-        self.listeners.push(function() {
+        self.listeners.push(function(releasedObj) {
             //clear timeout
             if (timeout) {
                 clearTimeout(timeout);
+            }
+            if (releasedObj) {
+                //push object in inUse collection
+                self.inUse[releasedObj.hashCode] = releasedObj;
+                //return new object
+                return callback(null, releasedObj);
             }
             var keys = Object.keys(self.available);
             if (keys.length>0) {
@@ -163,7 +248,7 @@ DataAdapterPool.prototype.getObject = function(callback) {
  * @param {{hashCode:string}|*} obj
  * @param {function(Error=)} callback
  */
-DataAdapterPool.prototype.releaseObject = function(obj, callback) {
+DataPool.prototype.releaseObject = function(obj, callback) {
     var self = this;
     callback = callback || function() {};
     if (typeof obj === 'undefined' || obj == null) {
@@ -175,7 +260,7 @@ DataAdapterPool.prototype.releaseObject = function(obj, callback) {
         //if listener exists
         if (typeof listener === 'function') {
             //execute listener
-            listener.call(self);
+            listener.call(self, obj);
         }
         else {
             //search inUse collection
@@ -194,13 +279,207 @@ DataAdapterPool.prototype.releaseObject = function(obj, callback) {
         callback(e);
     }
 };
+/**
+ * @class PoolAdapter
+ * @constructor
+ * @augments DataAdapter
+ * @property {DataAdapter} base
+ * @property {DataPool} pool
+ */
+function PoolAdapter(options) {
+    this.options = options;
+    var self = this;
+    Object.defineProperty(this, 'pool', {
+        get: function() {
+            return adpP.pools[self.options.pool];
+        }, configurable:false, enumerable:false
+    });
+    
+}
+/**
+ * @private
+ * @param callback
+ */
+PoolAdapter.prototype.open = function(callback) {
+    var self = this;
+    if (self.base) {
+        return self.base.open(callback);
+    }
+    else {
+        self.pool.getObject(function(err, result) {
+            if (err) { return callback(err); }
+            self.base = result;
+            self.base.open(callback);
+        });
+    }
+};
 
+/**
+ * Closes the underlying database connection
+ * @param callback {function(Error=)}
+ */
+PoolAdapter.prototype.close = function(callback) {
+    callback = callback || function() {};
+    var self = this;
+    if (self.base) {
+        self.pool.releaseObject(self.base,callback);
+        delete self.base;
+    }
+    else {
+        callback();
+    }
+};
+
+/**
+ * Executes a query and returns the result as an array of objects.
+ * @param query {string|*}
+ * @param values {*}
+ * @param callback {Function}
+ */
+PoolAdapter.prototype.execute = function(query, values, callback) {
+    var self = this;
+    self.open(function(err) {
+        if (err) { return callback(err); }
+        self.base.execute(query, values, callback);
+    });
+};
+
+/**
+ * Executes an operation against database and returns the results.
+ * @param batch {DataModelBatch}
+ * @param callback {Function=}
+ */
+PoolAdapter.prototype.executeBatch = function(batch, callback) {
+    callback(new Error('This method is obsolete. Use DataAdapter.executeInTransaction() instead.'));
+};
+
+
+/**
+ * Produces a new identity value for the given entity and attribute.
+ * @param entity {String} The target entity name
+ * @param attribute {String} The target attribute
+ * @param callback {Function=}
+ */
+PoolAdapter.prototype.selectIdentity = function(entity, attribute , callback) {
+    var self = this;
+    self.open(function(err) {
+        if (err) { return callback(err); }
+        if (typeof self.base.selectIdentity !== 'function') {
+            return callback(new Error('This method is not yet implemented. The base DataAdapter object does not implement this method..'));
+        }
+        self.base.selectIdentity(entity, attribute , callback);
+    });
+};
+
+/**
+ * Creates a database view if the current data adapter supports views
+ * @param {string} name A string that represents the name of the view to be created
+ * @param {QueryExpression} query The query expression that represents the database vew
+ * @param {Function} callback A callback function to be called when operation will be completed.
+ */
+PoolAdapter.prototype.createView = function(name, query, callback) {
+    var self = this;
+    self.open(function(err) {
+        if (err) { return callback(err); }
+        self.base.createView(name, query, callback);
+    });
+};
+
+/**
+ * Begins a transactional operation by executing the given function
+ * @param fn {Function} The function to execute
+ * @param callback {Function} The callback that contains the error -if any- and the results of the given operation
+ */
+PoolAdapter.prototype.executeInTransaction = function(fn, callback) {
+    var self = this;
+    self.open(function(err) {
+        if (err) { return callback(err); }
+        self.base.executeInTransaction(fn, callback);
+    });
+};
+
+/**
+ *
+ * @param obj {DataModelMigration|*} An Object that represents the data model scheme we want to migrate
+ * @param callback {Function}
+ */
+PoolAdapter.prototype.migrate = function(obj, callback) {
+    var self = this;
+    self.open(function(err) {
+        if (err) { return callback(err); }
+        self.base.migrate(obj, callback);
+    });
+};
+/**
+ *
+ * @type {{DataPool: DataPool, PoolAdapter: PoolAdapter, createInstance: Function, pools:*}}
+ */
 var adpP = {
     /**
-     * @constructs {DataAdapterPool}
+     * @constructs {DataPool}
      */
-    DataAdapterPool:DataAdapterPool
+    DataPool:DataPool,
+    /**
+     * @constructs {PoolAdapter}
+     */
+    PoolAdapter:PoolAdapter,
+    /**
+     * @param {{adapter:string|*,size:number,timeout:number,lifetime:number}|*} options
+     */
+    createInstance: function(options) {
+        var name, er;
+        if (typeof options.adapter === 'undefined' || options.adapter == null) {
+            er = new Error('Invalid argument. The target data adapter is missing.');
+            er.code = 'EARG';
+            throw er;
+        }
+        //init pool collection
+        adpP.pools = adpP.pools || {};
+
+        //get adapter's name
+        if (typeof options.adapter === 'string') {
+            name = options.adapter;
+        }
+        else if (typeof options.adapter.name === 'string') {
+            name = options.adapter.name;
+        }
+        //validate name
+        if (typeof name === 'undefined') {
+            er = new Error('Invalid argument. The target data adapter name is missing.');
+            er.code = 'EARG';
+            throw er;
+        }
+        /**
+         * @type {DataPool}
+         */
+        var pool = adpP.pools[name], result;
+        if (typeof pool === 'undefined') {
+            //create new pool with the name specified in options
+            adpP.pools[name] = new DataPool(options);
+            //assign new pool
+            pool = adpP.pools[name];
+        }
+        return new PoolAdapter({ pool:name });
+
+    }
 };
+
+//process.on('exit', function() {
+//    if (typeof adpP.pools !== 'undefined' || adpP.pools == null) { return; }
+//    Object.keys(adpP.pools).forEach(function(key) {
+//        try {
+//            if (typeof adpP.pools[x] === 'undefined' || adpP.pools[x] == null) { return; }
+//            if (typeof adpP.pools[x].cleanup == 'function') {
+//                adpP.pools[x].cleanup(function() {
+//                   //do nothing
+//                });
+//            }
+//        }
+//        catch(e) {
+//            console.log(e);
+//        }
+//    });
+//});
 
 if (typeof exports !== 'undefined') {
     module.exports = adpP;
