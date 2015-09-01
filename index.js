@@ -52,7 +52,7 @@ function debug(data) {
  * @property {{size:number,timeout:number,lifetime:number,adapter:*}} options
  */
 function DataPool(options) {
-    this.options = util._extend({ size:20, timeout:30000, lifetime:1200000 }, options);
+    this.options = util._extend({ size:20, timeout:30000, lifetime:360000 }, options);
     /**
      * A collection of objects which represents the available pooled data adapters.
      */
@@ -212,7 +212,8 @@ DataPool.prototype.getObject = function(callback) {
                 clearTimeout(timeout);
             }
             if (releasedObj) {
-                //push object in inUse collection
+                //push (update) released object in inUse collection
+                releasedObj.createdAt = new Date();
                 self.inUse[releasedObj.hashCode] = releasedObj;
                 //return new object
                 return callback(null, releasedObj);
