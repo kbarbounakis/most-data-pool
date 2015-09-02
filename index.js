@@ -10,10 +10,20 @@
  */
 var util = require('util'),
     async = require('async'),
-    path = require('path');
+    path = require('path'),
+    HASH_CODE_LENGTH = 6;
 
 function randomInt(min, max) {
     return Math.floor(Math.random()*max) + min;
+}
+
+function isEmptyString(s) {
+    if (typeof s === 'undefined' || s===null)
+        return true;
+    if (typeof s === 'string') {
+        return (s.replace(/^\s|\s$/ig,'').length === 0);
+    }
+    return true;
 }
 
 function randomString(length) {
@@ -44,23 +54,78 @@ function debug(data) {
     if (process.env.NODE_ENV==='development')
         log(data);
 }
+/**
+ * @class PoolDictionary
+ * @constructor
+ */
+function PoolDictionary() {
+    var _length = 0;
+    Object.defineProperty(this, 'length', {
+        get: function() {
+            return _length;
+        },
+        set: function(value) {
+            _length = value;
+        }, configurable:false, enumerable:false
+    })
+}
+PoolDictionary.prototype.exists = function(key) {
+    return this.hasOwnProperty(key);
+};
+PoolDictionary.prototype.push = function(key, value) {
+    if (this.hasOwnProperty(key)) {
+        this[key] = value;
+    }
+    else {
+        this[key] = value;
+        this.length += 1;
+    }
+};
+PoolDictionary.prototype.pop = function(key) {
+    if (this.hasOwnProperty(key)) {
+        delete this[key];
+        this.length -= 1;
+        return 1;
+    }
+    return 0;
+};
+PoolDictionary.prototype.clear = function() {
+    var self = this, keys = Object.keys(this);
+    keys.forEach(function(x) {
+        if (self.hasOwnProperty(x)) {
+            delete self[x];
+            self.length -= 1;
+        }
+    });
+    this.length = 0;
+};
+PoolDictionary.prototype.unshift = function() {
+    for(var key in this) {
+        if (this.hasOwnProperty(key)) {
+            var value = this[key];
+            delete this[key];
+            this.length -= 1;
+            return value;
+        }
+    }
+};
 
 /**
  * @class DataPool
  * @constructor
- * @param {{size:number,timeout:number,lifetime:number,adapter:*}=} options
+ * @param {{size:number,reserved:number,timeout:number,lifetime:number,adapter:*}=} options
  * @property {{size:number,timeout:number,lifetime:number,adapter:*}} options
  */
 function DataPool(options) {
-    this.options = util._extend({ size:20, timeout:30000, lifetime:360000 }, options);
+    this.options = util._extend({ size:20, reserved:2, timeout:30000, lifetime:1200000 }, options);
     /**
      * A collection of objects which represents the available pooled data adapters.
      */
-    this.available = { };
+    this.available = new PoolDictionary();
     /**
      * A collection of objects which represents the pooled data adapters that are currently in use.
      */
-    this.inUse = { };
+    this.inUse = new PoolDictionary();
     /**
      * An array of listeners that are currently waiting for a pooled data adapter.
      * @type {Function[]}
@@ -170,13 +235,147 @@ DataPool.prototype.cleanup = function(callback) {
         callback(e);
     }
 };
+/**
+ * Queries data adapter lifetime in order to release an object which exceeded the defined lifetime limit.
+ * If such an object exists, releases data adapter and creates a new one.
+ * @private
+ * @param {function(Error=,DataAdapter=)} callback
+ */
+DataPool.prototype.queryLifetimeForObject = function(callback) {
+    var self = this, keys = Object.keys(self.inUse), newObj;
+    if (keys.length==0) { return callback(); }
+    if (self.options.lifetime>0) {
+        var nowTime = (new Date()).getTime();
+        async.eachSeries(keys, function(hashCode,cb) {
+            var obj = self.inUse[hashCode];
+            if (typeof obj === 'undefined' || obj == null) {
+                return cb();
+            }
+            if (nowTime>(obj.createdAt.getTime()+self.options.lifetime)) {
+                if (typeof obj.close !== 'function') {
+                    return cb()
+                }
+                //close data adapter (the client which is using this adapter may get an error for this, but this data adapter has been truly timed out)
+                obj.close(function() {
+                    //create new object (data adapter)
+                    newObj = self.createObject();
+                    //add createdAt property
+                    newObj.createdAt = new Date();
+                    //add object hash code property
+                    newObj.hashCode = randomHex(HASH_CODE_LENGTH);
+                    //delete inUse object
+                    delete self.inUse[hashCode];
+                    //push object in inUse collection
+                    self.inUse[newObj.hashCode] = newObj;
+                    //return new object
+                    return cb(newObj);
+                });
+            }
+            else {
+                cb();
+            }
+        }, function(res) {
+            if (res instanceof Error) {
+                callback(res);
+            }
+            else {
+                callback(null, res);
+            }
+        });
+    }
+    else {
+        callback();
+    }
+};
+/**
+ * @private
+ * @param {function(Error=,DataAdapter=)} callback
+ */
+DataPool.prototype.waitForObject = function(callback) {
+    var self = this, timeout, newObj;
+    //register a connection pool timeout
+    timeout = setTimeout(function() {
+        //throw timeout exception
+        var er = new Error('Connection pool timeout.');
+        er.code = 'EPTIMEOUT';
+        callback(er);
+    }, self.options.timeout);
+    self.listeners.push(function(releasedObj) {
+        //clear timeout
+        if (timeout) {
+            clearTimeout(timeout);
+        }
+        if (releasedObj) {
+            //push (update) released object in inUse collection
+            releasedObj.createdAt = new Date();
+            self.inUse[releasedObj.hashCode] = releasedObj;
+            //return new object
+            return callback(null, releasedObj);
+        }
+        var keys = Object.keys(self.available);
+        if (keys.length>0) {
+            var key = keys[0];
+            //get connection from available connections
+            var pooledObj = self.available[key];
+            delete self.available[key];
+            //push object in inUse collection
+            self.inUse[pooledObj.hashCode] = pooledObj;
+            //return pooled object
+            callback(null, pooledObj);
+        }
+        else {
+            //create new object
+            newObj = self.createObject();
+            //add createdAt property
+            newObj.createdAt = new Date();
+            //add object hash code
+            newObj.hashCode = randomHex(HASH_CODE_LENGTH);
+            //push object in inUse collection
+            self.inUse[newObj.hashCode] = newObj;
+            //return new object
+            callback(null, newObj);
+        }
+    });
+};
+
+/**
+ * @private
+ * @param {function(Error=,DataAdapter=)} callback
+ */
+DataPool.prototype.newObject = function(callback) {
+    var self = this, newObj;
+    for(var key in self.available) {
+        if (self.available.hasOwnProperty(key)) {
+            //get available object
+            newObj = self.available[key];
+            //delete available key from collection
+            delete self.available[key];
+            //add createdAt property
+            newObj.createdAt = new Date();
+            //push object in inUse collection
+            self.inUse[newObj.hashCode] = newObj;
+            //and finally return it
+            return callback(null, newObj);
+        }
+    }
+    //otherwise create new object
+    newObj = self.createObject();
+    //add createdAt property
+    newObj.createdAt = new Date();
+    //add object hash code
+    newObj.hashCode = randomHex(HASH_CODE_LENGTH);
+    //push object in inUse collection
+    self.inUse[newObj.hashCode] = newObj;
+    //return new object
+    return callback(null, newObj);
+};
 
 /**
  *
  * @param {function(Error=,DataAdapter|*=)} callback
  */
 DataPool.prototype.getObject = function(callback) {
-    var self = this, newObj;
+    var self = this;
     callback = callback || function() {};
 
     if (self.state !== 'active') {
@@ -186,67 +385,25 @@ DataPool.prototype.getObject = function(callback) {
     }
     var inUseKeys = Object.keys(self.inUse);
     if ((inUseKeys.length < self.options.size) || (self.options.size == 0)) {
-        //create new object
-        newObj = self.createObject();
-        //add createdAt property
-        newObj.createdAt = new Date();
-        //add object hash code
-        newObj.hashCode = randomHex(6);
-        //push object in inUse collection
-        self.inUse[newObj.hashCode] = newObj;
-        //return new object
-        return callback(null, newObj);
+        self.newObject(function(err, result) {
+            if (err) { return callback(err); }
+            return callback(null, result);
+        });
     }
     else {
-        var timeout;
-        //register a connection pool timeout
-        timeout = setTimeout(function() {
-            //throw timeout exception
-            var er = new Error('Connection pool timeout.');
-            er.code = 'EPTIMEOUT';
-            callback(er);
-        }, self.options.timeout);
-        self.listeners.push(function(releasedObj) {
-            //clear timeout
-            if (timeout) {
-                clearTimeout(timeout);
-            }
-            if (releasedObj) {
-                //push (update) released object in inUse collection
-                releasedObj.createdAt = new Date();
-                self.inUse[releasedObj.hashCode] = releasedObj;
-                //return new object
-                return callback(null, releasedObj);
-            }
-            var keys = Object.keys(self.available);
-            if (keys.length>0) {
-                var key = keys[0];
-                //get connection from available connections
-                var pooledObj = self.available[key];
-                delete self.available[key];
-                //push object in inUse collection
-                self.inUse[pooledObj.hashCode] = pooledObj;
-                //return pooled object
-                callback(null, pooledObj);
-            }
-            else {
-                //create new object
-                newObj = self.createObject();
-                //add createdAt property
-                newObj.createdAt = new Date();
-                //add object hash code
-                newObj.hashCode = randomHex(6);
-                //push object in inUse collection
-                self.inUse[newObj.hashCode] = newObj;
-                //return new object
-                callback(null, newObj);
-            }
+        self.queryLifetimeForObject(function(err, result) {
+            if (err) { return callback(err); }
+            if (result) { return callback(null, result); }
+            self.waitForObject(function(err, result) {
+                if (err) { return callback(err); }
+                callback(null, result);
+            })
         });
     }
 };
 /**
  *
- * @param {{hashCode:string}|*} obj
+ * @param {{hashCode:string,close:Function}|*} obj
  * @param {function(Error=)} callback
  */
 DataPool.prototype.releaseObject = function(obj, callback) {
@@ -261,15 +418,39 @@ DataPool.prototype.releaseObject = function(obj, callback) {
         //if listener exists
         if (typeof listener === 'function') {
             //execute listener
-            listener.call(self, obj);
+            if (typeof obj.hashCode === 'undefined' || obj.hashCode == null) {
+                //generate hashCode
+                obj.hashCode = randomHex(HASH_CODE_LENGTH);
+            }
+            if (self.inUse.hasOwnProperty(obj.hashCode)) {
+                //call listener with the released object as parameter
+                listener.call(self, obj);
+            }
+            else {
+                //validate released object
+                if (typeof obj.close === 'function') {
+                    try {
+                        //call close() method
+                        obj.close();
+                        //call listener without any parameter
+                        listener.call(self);
+                    }
+                    catch(e) {
+                        log('An error occured while trying to release an unknown data adapter');
+                        log(e);
+                        //call listener without any parameter
+                        listener.call(self);
+                    }
+                }
+            }
         }
         else {
             //search inUse collection
             var used = this.inUse[obj.hashCode];
-            if (used) {
+            if (typeof used !== 'undefined') {
                 //delete used adapter
                 delete this.inUse[obj.hashCode];
-                //push adapter to available collection
+                //push data adapter to available collection
                 self.available[used.hashCode] = used;
             }
         }
@@ -465,22 +646,31 @@ var adpP = {
     }
 };
 
-//process.on('exit', function() {
-//    if (typeof adpP.pools !== 'undefined' || adpP.pools == null) { return; }
-//    Object.keys(adpP.pools).forEach(function(key) {
-//        try {
-//            if (typeof adpP.pools[x] === 'undefined' || adpP.pools[x] == null) { return; }
-//            if (typeof adpP.pools[x].cleanup == 'function') {
-//                adpP.pools[x].cleanup(function() {
-//                   //do nothing
-//                });
-//            }
-//        }
-//        catch(e) {
-//            console.log(e);
-//        }
-//    });
-//});
+process.on('exit', function() {
+    var keys;
+    if (typeof adpP.pools !== 'undefined' || adpP.pools == null) { return; }
+    try {
+        keys = Object.keys(adpP.pools);
+        keys.forEach(function(x) {
+            try {
+                log(util.format('Cleaning up data pool (%s)', key));
+                if (typeof adpP.pools[x] === 'undefined' || adpP.pools[x] == null) { return; }
+                if (typeof adpP.pools[x].cleanup == 'function') {
+                    adpP.pools[x].cleanup(function() {
+                        //do nothing
+                    });
+                }
+            }
+            catch(e) {
+                debug(e);
+            }
+        });
+    }
+    catch(e) {
+        debug(e);
+    }
+
+});
 
 if (typeof exports !== 'undefined') {
     module.exports = adpP;
