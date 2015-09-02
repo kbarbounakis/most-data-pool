@@ -39,4 +39,4 @@ The number of the data adapters that are going to be pooled for new connections.
 ###timeout: 
 A number of milliseconds to wait for getting a new data adapter. If this timeout exceeds, a timeout error will occured. The default value is 30000.
 ###lifetime
-A number of milliseconds which indicates whether a pooled data adapter will be automatically ejected from data adapters' collection. The default value is 1200000.
+A number of milliseconds which indicates whether or not a pooled data adapter will be automatically ejected from data adapters' collection. The default value is 1200000.
