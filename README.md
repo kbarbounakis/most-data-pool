@@ -29,6 +29,4 @@ Register MSSQL adapter on app.json as follows:
         ...
     ]
 
-If you are intended to use Pool data adapter as the default database adapter set the property "default" to true.
-
 The generic pool adapter will try to instantiate the adapter defined in options.adapter property.
