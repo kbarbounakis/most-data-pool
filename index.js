@@ -491,6 +491,11 @@ PoolAdapter.prototype.open = function(callback) {
         self.pool.getObject(function(err, result) {
             if (err) { return callback(err); }
             self.base = result;
+            if (typeof self.base.lastIdentity === 'function') {
+                self.lastIdentity = function(callback) {
+                    return this.base.lastIdentity(callback);
+                };
+            }
             self.base.open(callback);
         });
     }
@@ -505,6 +510,9 @@ PoolAdapter.prototype.close = function(callback) {
     var self = this;
     if (self.base) {
         self.pool.releaseObject(self.base,callback);
+        if (typeof self.base.lastIdentity === 'function') {
+            delete self.lastIdentity;
+        }
         delete self.base;
     }
     else {
