@@ -1,6 +1,6 @@
 {
   "name": "most-data-pool",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Most Web Framework Data Adapter Pool Extension",
   "main": "index.js",
   "repository": {
