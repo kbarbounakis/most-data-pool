@@ -384,7 +384,9 @@ DataPool.prototype.getObject = function(callback) {
         return callback(er);
     }
     var inUseKeys = Object.keys(self.inUse);
+    debug(util.format("INFO (DataPool): Connections in use:%s", inUseKeys.length));
     if ((inUseKeys.length < self.options.size) || (self.options.size == 0)) {
+        debug("INFO  (DataPool): Creating new object in data pool.");
         self.newObject(function(err, result) {
             if (err) { return callback(err); }
             return callback(null, result);
@@ -394,6 +396,7 @@ DataPool.prototype.getObject = function(callback) {
         self.queryLifetimeForObject(function(err, result) {
             if (err) { return callback(err); }
             if (result) { return callback(null, result); }
+            debug("INFO (DataPool): Waiting for an object from data pool.");
             self.waitForObject(function(err, result) {
                 if (err) { return callback(err); }
                 callback(null, result);
@@ -414,7 +417,7 @@ DataPool.prototype.releaseObject = function(obj, callback) {
     }
     try {
         //get the first listener
-        var listener = self.listeners.unshift();
+        var listener = self.listeners.shift();
         //if listener exists
         if (typeof listener === 'function') {
             //execute listener
@@ -446,12 +449,14 @@ DataPool.prototype.releaseObject = function(obj, callback) {
         }
         else {
             //search inUse collection
+            debug("INFO (DataPool): Releasing object from data pool.");
             var used = this.inUse[obj.hashCode];
             if (typeof used !== 'undefined') {
                 //delete used adapter
                 delete this.inUse[obj.hashCode];
                 //push data adapter to available collection
                 self.available[used.hashCode] = used;
+                debug(util.format("INFO (DataPool): Object released. Connections in use %s.", this.inUse.length));
             }
         }
         //finally exit
